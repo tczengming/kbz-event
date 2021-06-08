@@ -1,4 +1,4 @@
-// Last Update:2021-06-07 18:24:25
+// Last Update:2021-06-08 11:22:16
 /**
  * @file server.cpp
  * @brief 
@@ -13,7 +13,7 @@
 #include <kbz-event.h>
 
 int main() {
-
+	int n = 0;
 	for (;;) {
 		char *buf;
 		int len;
@@ -26,8 +26,11 @@ int main() {
 		} else {
 			printf("%s %d\n", __func__, __LINE__);
 		}
-		//sleep(1);
+		//if (++n >= 10)
+			//break;
 	}
+
+	kbz_event_exit();
 
 	return 0;
 }

@@ -35,6 +35,12 @@
 
 #include "util.h"
 
+enum
+{
+    GET_FREE,
+    FREE_ALL,
+};
+
 static const key_t ctrl_shm_key_base = 0xffee;
 static const char *ctrl_shm_name = "kbzev";
 
@@ -135,12 +141,16 @@ void ctrl_dump(ctrl_t *c) {
 }
 
 int ishm_new(int len) {
+	key_t key;
 	for (;;) {
-		int shm = shmget(ctrl_shm_key_base + (rand()%SHMKEY_MAX), len, 0777|IPC_CREAT|IPC_EXCL);
-		if (shm > 0)
+		key = ctrl_shm_key_base + (rand()%SHMKEY_MAX);
+		int shm = shmget(key, len, 0777|IPC_CREAT|IPC_EXCL);
+		if (shm > 0) {
+			printf("%s %d shmget key:%d\n", __func__, __LINE__, key);
 			return shm;
-		else
-			printf("%s %d err:%s\n", __func__, __LINE__, strerror(errno));
+		} else {
+			printf("%s %d key:%d err:%s\n", __func__, __LINE__, key, strerror(errno));
+		}
 	}
 }
 
@@ -182,25 +192,24 @@ static const char *isem_fmt = "kbz.%d";
 
 void isem_del(int k) {
 	char name[128];
-	sprintf(name, isem_fmt, k);
+	snprintf(name, sizeof(name), isem_fmt, k);
 
 	log("%s", name);
 	sem_unlink(name);
 }
 
 int isem_new(int n) {
+	char name[128];
 	for (;;) {
 		int k = ctrl_shm_key_base + (rand()%SHMKEY_MAX);
 
-		char name[128];
-		sprintf(name, isem_fmt, k);
+		snprintf(name, sizeof(name), isem_fmt, k);
 		sem_t *s = sem_open(name, O_CREAT|O_EXCL, 0777, n);
 		if (s != SEM_FAILED) {
 			sem_close(s);
 			return k;
 		} else {
-			log("sem_open('%s', %d) failed: %s", name, n, strerror(errno));
-			printf("sem_open('%s', %d) failed: %s\n", name, n, strerror(errno));
+			log("sem_open('%s', %d) key:%d failed: %s", name, n, k,  strerror(errno));
 			//return -1;
 		}
 	}
@@ -214,6 +223,7 @@ void isem_up(int k) {
 	if (s == SEM_FAILED)
 		return;
 	sem_post(s);
+	sem_close(s);
 }
 
 int isem_val(int k, int *v) {
@@ -226,7 +236,10 @@ int isem_val(int k, int *v) {
 		return -ENOENT;
 	}
 
-	return sem_getvalue(s, v);
+	int ret = sem_getvalue(s, v);
+	sem_close(s);
+
+	return ret;
 }
 
 void isem_down_timeout(int k, int timeout) {
@@ -261,6 +274,7 @@ void isem_down_timeout(int k, int timeout) {
 		log("wait end: %s", strerror(errno));
 	else
 		log("wait end: ok");
+	sem_close(s);
 }
 
 int gettid() {
@@ -275,14 +289,21 @@ static int pid_tid_exists(int pid, int tid) {
 	return !access(buf, F_OK);
 }
 
-static proc_t *chan_free_procs(chan_t *ch) {
+static proc_t *chan_free_procs(chan_t *ch, int type) {
 	int i;
 
 	for (i = 0; i < PROCS_NR; i++) {
 		proc_t *p = &ch->procs[i];
 
-		if (pid_tid_exists(p->pid, p->tid))
-			continue;
+		if (pid_tid_exists(p->pid, p->tid)) {
+			if (type == GET_FREE) {
+				continue;
+			} else {
+				int pid = getpid();
+				if (p->pid != pid)
+					continue;
+			}
+		}
 
 		if (p->sem)
 			isem_del(p->sem);
@@ -290,8 +311,10 @@ static proc_t *chan_free_procs(chan_t *ch) {
 		memset(p, 0, sizeof(proc_t));
 		ch->proc_nr--;
 
-		printf("%s %d i:%d\n", __func__, __LINE__, i);
-		return p;
+		if (type == GET_FREE) {
+			printf("%s %d i:%d\n", __func__, __LINE__, i);
+			return p;
+		}
 	}
 
 	return NULL;
@@ -309,7 +332,7 @@ static proc_t *chan_get_or_new_proc(chan_t *ch, int pid, int tid) {
 		}
 	}
 
-	p = chan_free_procs(ch);
+	p = chan_free_procs(ch, GET_FREE);
 	if (p == NULL) {
 		printf("%s %d p==NULL\n", __func__, __LINE__);
 		return NULL;
@@ -391,7 +414,7 @@ static int wait_post(
 				return -1;
 			// waiting 
 			log("waiting sem=%d timeout=%d", sem, timeout);
-			printf("%s %d waiting sem=%d timeout=%d\n", __func__, __LINE__, sem, timeout);
+			//printf("%s %d waiting sem=%d timeout=%d\n", __func__, __LINE__, sem, timeout);
 			isem_down_timeout(sem, timeout);
 			wait = 0;
 			continue;
@@ -409,6 +432,7 @@ static int wait_post(
 			
 		*out = (char *)p->buf + sizeof(post_t);
 		*out_len = ishm_len(po->shm) - sizeof(post_t);
+		ishm_del(po->shm);
 
 		ctrl_put(c);
 		return 0;
@@ -502,3 +526,15 @@ int kbz_event_ack(void *in, void *out, int out_len) {
 	return enque_post(po->chan_id, ACK, po->id, out, out_len, NULL);
 }
 
+void kbz_event_exit()
+{
+	ctrl_t *c = ctrl_get();
+	if (c == NULL)
+		return;
+
+	for (int j = 0; j < CHANS_NR; j++) {
+		chan_t *ch = &c->chans[j];
+		chan_free_procs(ch, FREE_ALL);
+	}
+	ctrl_put(c);
+}
