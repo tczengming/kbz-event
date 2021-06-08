@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <pthread.h>
 
 enum {
 	LOG_DEBUG,
@@ -14,7 +15,7 @@ enum {
 #define warn(fmt, args...) _log(LOG_WARN, __func__, __FILE__, __LINE__, fmt, ##args) 
 #define error(fmt, args...) _log(LOG_ERROR, __func__, __FILE__, __LINE__, fmt, ##args) 
 
-void _log(int level, const char *, const char *, int, char *, ...);
+void _log(int level, const char *, const char *, int, const char *, ...);
 void log_ban(const char *, const char *);
 void log_set_level(int level);
 void log_init();
@@ -31,8 +32,10 @@ float now();
 
 // buffer is avaliable until next push/post/get
 
-#define PROCS_NR 128
-#define POSTS_NR 1024
+//#define PROCS_NR 128
+//#define POSTS_NR 1024
+#define PROCS_NR 8
+#define POSTS_NR 64
 #define CHANS_NR 5
 
 #define SHMKEY_MAX (POSTS_NR*CHANS_NR*128)

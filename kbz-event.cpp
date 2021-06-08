@@ -31,11 +31,14 @@
 #include <sys/sem.h>  
 #include <sys/types.h>  
 #include <sys/syscall.h>
+#include <assert.h>
 
 #include "util.h"
 
 static const key_t ctrl_shm_key_base = 0xffee;
 static const char *ctrl_shm_name = "kbzev";
+
+void ishm_del(int i);
 
 static void ctrl_init(ctrl_t *c) {
 	pthread_mutexattr_t ma;
@@ -115,19 +118,16 @@ void ctrl_put(ctrl_t *c) {
 }
 
 static void dump_procs(chan_t *ch) {
-	int i;
-
-	for (i = 0; i < PROCS_NR; i++) {
-	}
+	//for (int i = 0; i < PROCS_NR; i++) {
+	//}
 }
 
-static void ctrl_dump(ctrl_t *c) {
+void ctrl_dump(ctrl_t *c) {
 	int i;
 
 	for (i = 0; i < CHANS_NR; i++) {
 		chan_t *ch = &c->chans[i];
-		fprintf(stderr, "chan #%d\n", i);
-		fprintf(stderr, "  proc_nr %d\n", ch->proc_nr);
+		fprintf(stderr, "chan #%d proc_nr %d\n", i, ch->proc_nr);
 		if (ch->proc_nr)
 			dump_procs(ch);
 		fprintf(stderr, "  post_nr %d\n", ch->post_nr);
@@ -139,16 +139,27 @@ int ishm_new(int len) {
 		int shm = shmget(ctrl_shm_key_base + (rand()%SHMKEY_MAX), len, 0777|IPC_CREAT|IPC_EXCL);
 		if (shm > 0)
 			return shm;
+		else
+			printf("%s %d err:%s\n", __func__, __LINE__, strerror(errno));
 	}
 }
 
 int ishm_new_from_buf(void *buf, int buf_len, void *meta, int meta_len) {
 	int k = ishm_new(buf_len + meta_len);
+	if (k == -1) {
+		printf("%s %d err:%s\n", __func__, __LINE__, strerror(errno));
+		return -1;
+	}
 	void *p = shmat(k, NULL, 0);
+	if (p  == (void *) -1) {
+		printf("%s %d k:%d err:%s\n", __func__, __LINE__, k, strerror(errno));
+		ishm_del(k);
+		return -1;
+	}
 
 	if (meta_len) {
 		memcpy(p, meta, meta_len);
-		memcpy(p + meta_len, buf, buf_len);
+		memcpy((char *)p + meta_len, buf, buf_len);
 	} else {
 		memcpy(p, buf, buf_len);
 	}
@@ -189,6 +200,8 @@ int isem_new(int n) {
 			return k;
 		} else {
 			log("sem_open('%s', %d) failed: %s", name, n, strerror(errno));
+			printf("sem_open('%s', %d) failed: %s\n", name, n, strerror(errno));
+			//return -1;
 		}
 	}
 }
@@ -255,6 +268,8 @@ int gettid() {
 }
 
 static int pid_tid_exists(int pid, int tid) {
+	if (pid <= 0 || tid <= 0)
+		return 0;
 	char buf[128];
 	sprintf(buf, "/proc/%d/task/%d", pid, tid);
 	return !access(buf, F_OK);
@@ -275,6 +290,7 @@ static proc_t *chan_free_procs(chan_t *ch) {
 		memset(p, 0, sizeof(proc_t));
 		ch->proc_nr--;
 
+		printf("%s %d i:%d\n", __func__, __LINE__, i);
 		return p;
 	}
 
@@ -287,13 +303,17 @@ static proc_t *chan_get_or_new_proc(chan_t *ch, int pid, int tid) {
 
 	for (i = 0; i < PROCS_NR; i++) {
 		p = &ch->procs[i];
-		if (p->pid == pid && p->tid == tid)
+		if (p->pid == pid && p->tid == tid) {
+			printf("%s %d pid:%d tid%d\n", __func__, __LINE__, pid, tid);
 			return p;
+		}
 	}
 
 	p = chan_free_procs(ch);
-	if (p == NULL)
+	if (p == NULL) {
+		printf("%s %d p==NULL\n", __func__, __LINE__);
 		return NULL;
+	}
 
 	p->post_i = ch->post_e;
 	p->pid = pid;
@@ -326,6 +346,12 @@ static int wait_post(
 	check_proc_cb_t check_proc, check_post_cb_t check_post, void *cb_p
 ) {
 	log("chan=%d pid=%d tid=%d timeout=%d", chan_id, getpid(), gettid(), timeout);
+	int wait = 1;
+
+	if (chan_id >= CHANS_NR) {
+		printf("%s %d err chan_id:%d > %d\n", __func__, __LINE__, chan_id, CHANS_NR);
+		return -EINVAL;
+	}
 
 	for (;;) {
 		ctrl_t *c = ctrl_get();
@@ -336,6 +362,7 @@ static int wait_post(
 
 		proc_t *p = chan_get_or_new_proc(ch, getpid(), gettid());
 		if (p == NULL) {
+			printf("%s %d -ENOMEM\n", __func__, __LINE__);
 			ctrl_put(c);
 			return -ENOMEM;
 		}
@@ -344,6 +371,7 @@ static int wait_post(
 			int r = check_proc(ch, p, cb_p);
 			if (r) {
 				ctrl_put(c);
+				printf("%s %d\n", __func__, __LINE__);
 				return r;
 			}
 		}
@@ -359,9 +387,13 @@ static int wait_post(
 			p->sem = sem;
 			ctrl_put(c);
 
+			if (wait == 0)
+				return -1;
 			// waiting 
 			log("waiting sem=%d timeout=%d", sem, timeout);
+			printf("%s %d waiting sem=%d timeout=%d\n", __func__, __LINE__, sem, timeout);
 			isem_down_timeout(sem, timeout);
+			wait = 0;
 			continue;
 		}
 
@@ -369,7 +401,13 @@ static int wait_post(
 		if (p->buf) 
 			shmdt(p->buf);
 		p->buf = shmat(po->shm, NULL, 0);
-		*out = p->buf + sizeof(post_t);
+		if (p->buf  == (void *) -1) {
+			printf("%s %d err:%s\n", __func__, __LINE__, strerror(errno));
+			ctrl_put(c);
+			return -1;
+		}
+			
+		*out = (char *)p->buf + sizeof(post_t);
 		*out_len = ishm_len(po->shm) - sizeof(post_t);
 
 		ctrl_put(c);
@@ -378,6 +416,11 @@ static int wait_post(
 }
 
 static int enque_post(int chan_id, int type, uint64_t ack_id, void *in, int in_len, post_t *cb) {
+	if (chan_id >= CHANS_NR) {
+		printf("%s %d err chan_id:%d > %d\n", __func__, __LINE__, chan_id, CHANS_NR);
+		return -EINVAL;
+	}
+	
 	ctrl_t *c = ctrl_get();
 	if (c == NULL)
 		return -ENOENT;
@@ -399,6 +442,10 @@ static int enque_post(int chan_id, int type, uint64_t ack_id, void *in, int in_l
 	po->ack_id = ack_id;
 	po->chan_id = chan_id;
 	po->shm = ishm_new_from_buf(in, in_len, po, sizeof(post_t));
+	if (po->shm < 0) {
+		ctrl_put(c);
+		return -1;
+	}
 	if (cb)
 		*cb = *po;
 	ch->post_nr++;
@@ -421,7 +468,7 @@ static int post_is_normal(post_t *p, void *_) {
 	return !(p->type == POST || p->type == PUSH);
 }
 
-int kbz_event_get(int chan_id, void **out, int *out_len, int timeout) {
+int kbz_event_get(int chan_id, int timeout, void **out, int *out_len) {
 	return wait_post(chan_id, timeout, out, out_len, NULL, post_is_normal, NULL);
 }
 
@@ -449,7 +496,7 @@ int kbz_event_push(int chan_id, void *in, int in_len, void **out, int *out_len, 
 }
 
 int kbz_event_ack(void *in, void *out, int out_len) {
-	post_t *po = (post_t *)(in - sizeof(post_t));
+	post_t *po = (post_t *)((char *)in - sizeof(post_t));
 	if (po->type != PUSH)
 		return -EINVAL;
 	return enque_post(po->chan_id, ACK, po->id, out, out_len, NULL);

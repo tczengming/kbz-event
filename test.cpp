@@ -31,7 +31,9 @@
 #include <sys/sem.h>  
 #include <sys/types.h>  
 #include <sys/syscall.h>
+#include <sys/time.h>
 
+#include "kbz-event.h"
 #include "util.h"
 
 static void usage() {
@@ -73,7 +75,7 @@ static void test(int n) {
 		case 2: {
 			log("test ctrl_get: put str");
 			void *a = ctrl_get();
-			sprintf(a, "hello: %d", (int)time(NULL));
+			sprintf((char *)a, "hello: %d", (int)time(NULL));
 			break;
 		}
 
@@ -123,14 +125,14 @@ int main(int argc, char *argv[]) {
 			shm_unlink("shm.ctrl");
 			ctrl_t *c = ctrl_get();
 			ctrl_put(c);
-			return;
+			return 0;
 		}
 
 		if (!strcmp(argv[i], "-d")) {
 			ctrl_t *c = ctrl_get();
 			ctrl_dump(c);
 			ctrl_put(c);
-			return;
+			return 0;
 		}
 
 		if (!strcmp(argv[i], "-g")) {
@@ -142,9 +144,10 @@ int main(int argc, char *argv[]) {
 			sscanf(argv[i+1], "%d", &chan_id);
 
 			for (;;) {
-				event_v2_get(chan_id, 0, &buf, &len);
+				kbz_event_get(chan_id, 0, &buf, &len);
 				info("[got] buf=%s len=%d", buf, len);
-				event_v2_ack(buf, "hello", 6);
+				char hello[] = "hello";
+				kbz_event_ack(buf, hello, 6);
 			}
 		}
 
@@ -156,7 +159,7 @@ int main(int argc, char *argv[]) {
 			int len;
 			sscanf(argv[i+1], "%d", &chan_id);
 			char *s = argv[i+2];
-			event_v2_post(chan_id, s, strlen(s)+1);
+			kbz_event_post(chan_id, s, strlen(s)+1);
 		}
 
 		if (!strcmp(argv[i], "-u")) {
@@ -167,7 +170,7 @@ int main(int argc, char *argv[]) {
 			void *buf;
 			int len;
 			sscanf(argv[i+1], "%d", &chan_id);
-			event_v2_push(chan_id, s, strlen(s)+1, &buf, &len, 1500);
+			kbz_event_push(chan_id, s, strlen((char *)s)+1, &buf, &len, 1500);
 			info("[got] buf=%s len=%d", buf, len);
 			i += 2;
 		}

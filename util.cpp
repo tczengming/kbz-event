@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <sys/time.h>
 
 #include "util.h"
 
@@ -16,7 +17,8 @@ void log_ban(const char *file, const char *func) {
 	ban_nr++;
 }
 
-static int log_level = LOG_WARN;
+//static int log_level = LOG_WARN;
+static int log_level = LOG_DEBUG;
 
 void log_set_level(int level) {
 	log_level = level;
@@ -25,7 +27,7 @@ void log_set_level(int level) {
 void _log(
 	int level,
 	const char *func, const char *file, int line,
-	char *fmt, ...
+	const char *fmt, ...
 ) {
 	va_list ap;
 	char buf[1024];
